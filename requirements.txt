@@ -1,0 +1,11 @@
+streamlit
+pdfplumber
+pandas
+plotly
+openpyxl
+PyMuPDF
+python-dotenv
+imap-tools
+playwright
+pytz
+google-genai
