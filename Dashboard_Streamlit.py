@@ -1,0 +1,151 @@
+import streamlit as st
+import pandas as pd
+import os
+import sqlite3
+import io
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+# ==========================================
+# CONFIGURACIÓN DE LA PÁGINA Y FIRMA
+# ==========================================
+st.set_page_config(page_title="Hub de Auditoría - Conmet", page_icon="🕵️‍♂️", layout="wide")
+
+st.sidebar.markdown(
+    """
+    <div style="position: fixed; bottom: 10px; left: 10px; font-size: 10px; color: gray;">
+        V4.7 - Desarrollado por JJ para automatización Aduax
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+
+# ==========================================
+# 🎨 FUNCIÓN MAESTRA: EMBELLECEDOR DE EXCEL
+# ==========================================
+def embellecer_excel(writer):
+    azul_header = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    fuente_blanca_negrita = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    alineacion_centro = Alignment(horizontal="center", vertical="center")
+    borde_delgado = Border(
+        left=Side(style='thin', color='D9D9D9'), right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'), bottom=Side(style='thin', color='D9D9D9')
+    )
+
+    for ws_name in writer.sheets:
+        ws = writer.sheets[ws_name]
+        ws.views.sheetView[0].showGridLines = True
+        
+        for cell in ws[1]:
+            cell.fill = azul_header
+            cell.font = fuente_blanca_negrita
+            cell.alignment = alineacion_centro
+            cell.border = borde_delgado
+            
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.border = borde_delgado
+                if ws_name == 'Resumen' and cell.column == 2:
+                    cell.alignment = alineacion_centro
+                    
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    if cell.value:
+                        max_len = max(max_len, len(str(cell.value)))
+                except:
+                    pass
+            ws.column_dimensions[col_letter].width = min(max_len + 2, 60)
+
+# ------------------------------------------
+# UI: MÓDULO 9 - PORTAL CONMET
+# ------------------------------------------
+
+st.title("🤖 Dashboard: Cargas Portal CONMET")
+
+st.info("🕒 **Automatización Activa:** El robot se ejecuta en la nube de forma automática. Para forzar una ejecución manual, acude al panel de GitHub Actions.")
+
+st.markdown("---")
+
+try:
+    # Extraer datos directamente de la base de datos SQLite
+    if os.path.exists('historial_cargas_Conmet.db'):
+        conn = sqlite3.connect('historial_cargas_Conmet.db')
+        df_historial = pd.read_sql_query("SELECT * FROM historial", conn)
+        conn.close()
+        
+        if not df_historial.empty:
+            
+            # 1. Renombramos las columnas de la BD para mostrarlas elegantes en el Dashboard
+            df_historial.rename(columns={
+                'factura': 'Factura',
+                'fecha_factura': 'Fecha Factura',
+                'fecha_carga': 'Fecha Carga',
+                'monto_facturado': 'Monto',
+                'pedimento': 'Pedimento',
+                'estatus': 'Estatus Principal',
+                'detalle_error': 'Detalle',
+                'folio_operacion': 'Folio'
+            }, inplace=True)
+            
+            # 2. Separamos los DataFrames
+            facturas_exito = df_historial[df_historial['Estatus Principal'] == 'Ok cargada']
+            facturas_error = df_historial[df_historial['Estatus Principal'] != 'Ok cargada']
+            
+            # 3. Calculamos Métricas
+            monto_total_procesado = facturas_exito['Monto'].sum()
+            total_facturas = len(facturas_exito)
+            errores = len(facturas_error)
+
+            # 4. Renderizamos las columnas
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(label="Monto Total Cargado", value=f"${monto_total_procesado:,.2f} MXN")
+            with col2:
+                st.metric(label="Facturas con Éxito", value=f"{total_facturas} facturas")
+            with col3:
+                st.metric(label="Cargas Pendientes", value=f"{errores} alertas")
+
+            st.markdown("---")
+            
+            # 5. Tablas visuales
+            st.markdown("### 📊 Historial de Cargas Exitosas")
+            if not facturas_exito.empty:
+                st.dataframe(facturas_exito[['Factura', 'Pedimento', 'Monto', 'Folio', 'Fecha Carga']], width='stretch', hide_index=True)
+            else:
+                st.info("No hay cargas exitosas registradas aún.")
+
+            if errores > 0:
+                st.markdown("### ⚠️ Log de Cargas Pendientes e Intervenciones")
+                st.dataframe(facturas_error[['Factura', 'Monto', 'Estatus Principal', 'Detalle', 'Fecha Carga']], width='stretch', hide_index=True)
+                
+            st.markdown("---")
+            st.subheader("📥 Descargar Reporte Histórico")
+            
+            # 6. Generación del Excel en Memoria
+            buffer_conmet = io.BytesIO()
+            with pd.ExcelWriter(buffer_conmet, engine='openpyxl') as writer:
+                if not facturas_exito.empty:
+                    facturas_exito.to_excel(writer, sheet_name='Éxitos', index=False)
+                if not facturas_error.empty:
+                    facturas_error.to_excel(writer, sheet_name='Pendientes_Errores', index=False)
+                
+                # Asumiendo que tu función embellecer_excel aplica a todas las hojas
+                embellecer_excel(writer)
+                
+            st.download_button(
+                label="📊 Descargar Historial Completo de Cargas (Excel)",
+                data=buffer_conmet.getvalue(),
+                file_name="Historial_Cargas_Conmet.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            st.warning("La base de datos existe pero la tabla está vacía.")
+    else:
+        st.info("Aún no hay datos históricos registrados. El dashboard se actualizará cuando se ejecute el robot.")
+
+except Exception as e:
+    st.error(f"Error crítico en Dashboard CONMET. Detalle: {e}")
